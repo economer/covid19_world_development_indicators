@@ -1,0 +1,357 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+## Survivl Analysis: Managing the number of cases
+
+Here, I made an attempt to answer the following questions: 
+
+1- For a series countries in our sample if the moving average of the number of cases in the previous 7 days during the first 4 months after the pandemic started (i.e. April 1st 2020 till July 31 2020), reaches a maximum value, how long does it take so this value drops by 50%?
+
+2- What are the factors affecting the amount of time required to reduce the number of cases by 50%?
+
+# libraries 
+
+```{r}
+library(tidyverse)
+library(lubridate) 
+library(ggfortify)
+library(survival)
+library(zoo)
+```
+
+
+First the final_covid data is imported and then the rolling mean is calculated for each country. 
+
+```{r}
+# download the covid case data
+final_covid <- read_csv("https://github.com/economer/covid19_world_development_indicators/raw/master/final_covid_Jan31.csv")
+
+
+
+## calculate rolling mean of last 7 days (aling=right)
+covid_roll_mean <- final_covid %>%
+    filter(date>as_date("2020-03-31")) %>%
+  group_by(country) %>%
+  mutate(roll_case = rollmean(x = daily_case,k = 7,na.rm=T,fill = NA,na.pad = NA,align = "right")) 
+
+
+
+```
+
+## Examples of the varaitions of the daily number of cases in the first 4 months after the pandemic started. 
+
+Figure below indicates how the number of cases changes in terms of the weekly moving average in Canada, Australia, Spain, Sweden and US. For instance the number of cases (the moving average of last 7 days) in Canada reached to a maximum that was equal to 1922 on 2020-04-22 and after 38 days on 22020-05-30 the rolling mean of last 7 days reached to 932 that is 48% of the maximum value observed on 2020-04-22. 
+
+```{r}
+
+covid_roll_mean %>%
+    filter(country %in% c("Canada","Australia","Spain","Sweden","US","France","New Zealand")) %>%
+    #filter(country %in% data_surv1$country) %>%
+  ggplot() +
+  geom_line(aes(date, roll_case, color=country),show.legend = F) +
+  scale_x_date(breaks = "10 days") +
+  labs(x="Date",y="Daily Number of Cases\n (7 Days Moving Average)") +
+    theme_light() +
+  theme(axis.text.x = element_text(angle = 90),
+        strip.text = element_text(size = 1)
+        ) +
+    facet_wrap(~country, scales = "free_y") 
+
+ff <-  covid_roll_mean %>%
+    #filter(country %in% c("Canada","Australia","Spain","Sweden","US","France","New Zealand")) %>%
+    filter(country %in% data_surv1$country) %>%
+  ggplot() +
+  geom_line(aes(date, roll_case, color=country),show.legend = F) +
+  scale_x_date(breaks = "10 days") +
+  labs(x="Date",y="Daily Number of Cases\n (7 Days Moving Average)") +
+    theme_light() +
+  theme(axis.text.x = element_text(angle = 90),
+                strip.text = element_text(size = 1)) +
+    facet_wrap(~country, scales = "free_y") 
+```
+## generating the dataset for survival analysis. 
+
+Conducting the survival analysis required two components: first the time it takes an event happens. Second, if during the period we are observing an object, an event happens. 
+
+```{r}
+covid_roll_mean1 %>%
+  filter(country=="Canada")
+```
+
+
+```{r}
+
+# 
+covid_roll_mean1 <- covid_roll_mean %>%
+    filter(date<as_date("2020-08-01"),date>as_date("2020-03-31")) %>%
+  ungroup() %>%
+  group_by(country) %>%
+  mutate(
+         case_max = max(roll_case,na.rm = T), # what is the max value for each country
+         case_max_rel = (roll_case/case_max), # the relative value of current date to the max for each country
+         case_max_event = ifelse(case_max_rel<=.50,1, 0 ), # if an event happens during the period of interest
+         date_max_observed = which.max(roll_case),  # the row (date) where the roll_case is a max 
+         day_num = row_number(), # show the row number (index) for each country
+         duration1 = day_num-date_max_observed,  # different between current date and a date where a max was reached. 
+         ) 
+
+## survival data 
+data_surv <- covid_roll_mean1 %>%
+  as_tibble() %>%
+  ungroup() %>%
+  group_by(country) %>% 
+  filter(date>=as_date(first(date)+date_max_observed)-1) %>% # drop any rows before the max reached 
+  mutate(cums_sum_event = cumsum(case_max_event) , # flagging the first times an event was observed 
+         event =    match(cums_sum_event,table = 1,nomatch = 0)
+         ) %>%
+  filter(date == first(date) | event==1) %>% # filter the required values 
+  mutate(duration = date-lag(date)) # calculate the duration 
+
+
+# final cleaning 
+data_surv1 <- data_surv %>%
+  mutate(time_passed = as.integer(duration)) %>% 
+  filter(is.na(time_passed) | time_passed>1) %>%
+  select(country, time_passed) %>%
+  mutate(event2 = ifelse(is.na(time_passed),0,1)) %>%
+  group_by(country) %>%
+  mutate(event = ifelse(is.na(time_passed) & is.na(last(time_passed)),0,1)) %>%
+    mutate(time_passed = ifelse(event==0,122,time_passed),
+           time_passed = ifelse(is.na(time_passed),lead(time_passed),time_passed)
+           )
+data_surv1 <- data_surv1 %>%
+  select(-event2) %>%
+  distinct(country,.keep_all = T)
+
+data_surv1 <- data_surv1 %>%
+  ungroup() %>%
+  as.data.frame()  %>%
+  filter(!country %in% c("Diamond Princess", "Holy See",  "MS Zaandam", "Saint Kitts and Nevis", "Syria", "Yemen","Congo (Kinshasa)","Micronesia","Brunei","Dominica","Lesotho","Marshall Islands","Solomon Islands", "Sierra Leone","Samoa","Somalia","South Sudan","Suriname","Vietnam","Vanuatu"))  #  countries with unreilable reports or those in war are dropped 
+
+
+```
+
+```{r}
+covid_roll_mean %>%
+    filter(country %in% c("France")) %>%
+    #filter(country %in% data_surv1$country) %>%
+        filter(date<as_date("2020-08-01"),date>as_date("2020-03-31")) %>%
+
+  ggplot() +
+  geom_line(aes(date, roll_case, color=country),show.legend = F) +
+  scale_x_date(breaks = "10 days") +
+  labs(x="Date",y="Daily Number of Cases\n (7 Days Moving Average)") +
+    theme_light() +
+  theme(axis.text.x = element_text(angle = 90),
+        strip.text = element_text(size = 1)
+        ) +
+    facet_wrap(~country, scales = "free_y") 
+```
+
+
+## Answering the first question
+### A simple Kaplan-Meier analysis
+1- For the countries in the sample if the moving average of the number of cases in the previous 7 days during the first 4 months after the pandemic started (i.e. April 1st 2020 till July 31 2020), reaches a maximum value, how long does it take so this value drops by 50%?
+Canada performance was not better than 55% of countries that could reduce the number of daily cases by 50%. 
+
+
+78 country could reduce the maximum number of cases bt 50%. 
+
+```{r}
+library(survival) # survival package for survival analysis
+library(ggfortify) # depicting the survival analysis results 
+
+# right censored or not? 
+# with(data_surv1,Surv(time_passed,event)) 
+
+# 
+
+surv1 <- survfit(Surv(time_passed,event)~1,data_surv1)
+
+# median = 25.5 -> half of the cases could reduce the max value by 50% before 25.5 days for the other half it took more than 25.5 days
+surv1
+
+# summary 
+summary(surv1)
+
+
+# survival curve, Kaplan-Meier, the red line is where Canada is located
+autoplot(surv1,surv.colour = "blue",surv.geom = "step") +
+  geom_vline(xintercept = 38,color="red") +
+  scale_y_continuous(n.breaks = 10) +
+  theme_bw()
+
+
+
+```
+
+## Countries characteristics and their performance in reducing the number of cases during the first 4 months afte the begning of the pandemic. 
+
+The countries characteristics are collected using World Development Indicators (WDI). the WDI can be donwloaed and cleaned as follows. 
+ 
+```{r}
+library(downloader)
+
+### WDI data location
+url <- "http://databank.worldbank.org/data/download/WDI_csv.zip"
+
+
+### download WDI data
+download(url, dest="WDI_csv.zip", mode="wb") 
+unzip("WDI_csv.zip")
+temp
+### unzip it in a path. My path is exdir = “/Users/shh/Downloads”, choose yours 
+unzip(zipfile = "WDI_csv.zip")
+
+### import WDI data
+wdi <- read_csv("WDIData.csv") # use your own path here 
+
+### clean WDI data. 
+wdi <- wdi %>% 
+  select(-`Country Code`,-`Indicator Code`, country=`Country Name`, index= `Indicator Name`) 
+
+
+### data is wide make it long and make it wide again as follows:
+wdi_wide <- wdi %>%
+  pivot_longer(names_to="year", values_to = "val", cols = c(-country, -index)) %>%
+  pivot_wider(names_from = index, values_from = val)
+
+## select the variables of interests 
+
+#### list of the countries in the data_surv1 
+#### 
+country_list <- data_surv1 %>%
+  distinct(country) %>%
+  select(country)
+
+library(stringr)
+
+## clean the names to match with surv data 
+wdi1 <- wdi_wide %>%
+  mutate(country=stringr::str_squish(country)) %>%
+  filter(year>2010) %>%
+  mutate(country = fct_recode(country, Iran = "Iran, Islamic Rep.", US = "United States", Russia = "Russian Federation",
+                              Bahamas = "Bahamas, The", Burma = "Myanmar", Egypt= "Egypt, Arab Rep.",Gambia= "Gambia, The",
+                            'Korea, South'  = "Korea, Rep.",Micronesia = "Micronesia, Fed. Sts.", Slovakia="Slovak Republic", 
+                           Venezuela= "Venezuela, RB"
+                              ))
+## keep only those countries that are in the country list. 156 countries are let in wdi2 data. 
+wdi2 <- wdi1 %>%
+  filter(country %in% country_list$country)
+
+
+```
+## select the varaibles of intersts
+Here only a few variables are selected for the sake of illustration. The data is filtered for after 2010 and then it was averaged across the years after 2010. 
+
+```{r}
+wdi2 %>%
+  janitor::clean_names() %>%
+  select(contains("health"))
+wdi3 <- wdi2 %>%
+  ungroup() %>%
+  janitor::clean_names() %>%
+  select(country, year, current_health_expenditure_percent_of_gdp, gdp_per_capita_constant_2010_us, gdp_constant_2010_us, age_dependency_ratio_percent_of_working_age_population, population_total, urban_population) %>%
+  group_by(country) %>%
+  mutate(percent_urban = urban_population/population_total) 
+
+wdi4 <- wdi3 %>%
+  ungroup() %>%
+  group_by(country) %>%
+  summarize(across(.cols = c(2,3,4,5,6,7,8),.fns = mean,na.rm=T))
+
+
+```
+## join the WDI data with data_surv1 and other cleanings. 
+```{r}
+data_surv2 <- left_join(wdi4, data_surv1, by="country")
+
+# keep the countries with more than 1,000,000 population and GDP per captial above 1000
+
+data_surv3 <- data_surv2 %>%
+    filter(population_total>1000000) %>%
+  filter(gdp_per_capita_constant_2010_us>=1000)
+
+data_surv4 <- data_surv3 %>%
+  mutate(percent_urban_cat = gtools::quantcut(percent_urban,q = 3,na.rm = T),
+         gdp_per_capita_constant_2010_us_cat = gtools::quantcut(gdp_per_capita_constant_2010_us,q = 3,na.rm = T),
+                  current_health_expenditure_percent_of_gdp_cat = gtools::quantcut(current_health_expenditure_percent_of_gdp,q = 2,na.rm = T),
+         population_total_cat = gtools::quantcut(population_total,q = 3,na.rm = T)
+         )
+
+
+```
+
+## The role of population
+
+three categories of population were generated. The log-rank test's null hypothesis is not rejected even at 10% (H0: no differecnes exists in survival between the two groups)
+
+### simple analysis 
+
+```{r}
+surv1.1 <- survfit(Surv(time_passed,event) ~ 1, data = data_surv4)
+
+surv1.1
+
+
+autoplot(surv1.1,conf.int = F)
+
+```
+
+
+
+```{r}
+options(scipen=999)
+surv2 <- survfit(Surv(time_passed,event) ~ population_total_cat, data = data_surv4)
+
+surv2
+
+
+autoplot(surv2,conf.int = F)
+
+survdiff(Surv(time_passed,event) ~ population_total_cat, data = data_surv4)
+```
+## The role of gdp per capita
+
+three categories of GDP per capita were generated. The log-rank test's null hypothesis is rejected at 1% (H0: no differences exists in survival between the two groups). countries with GDP per capita of above $ 14500 could reduce the number of cases by 50% and more signficantly sooner than countries with lower income. 
+
+```{r}
+options(scipen=999)
+surv3 <- survfit(Surv(time_passed,event) ~ gdp_per_capita_constant_2010_us_cat, data = data_surv4)
+
+surv3
+
+
+autoplot(surv3,conf.int = F)
+
+survdiff(Surv(time_passed,event) ~ gdp_per_capita_constant_2010_us_cat, data = data_surv4)
+```
+
+
+
+# Cox model with GDP per capita 
+```{r}
+
+
+  
+surv4 <- coxph(Surv(time_passed,event) ~ gdp_per_capita_constant_2010_us +
+                 population_total,
+                 , data = data_surv4)
+
+surv4
+
+summary(surv4)
+## cox model checking -> proportional hazard assumption , H0 is rejected for GDP per capita and not for the total population.  
+surv4_zph <- cox.zph(surv4)
+surv4_zph
+plot(surv4_zph)
+```
+
+
+```{r}
+
+```
+
