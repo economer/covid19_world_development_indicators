@@ -8,6 +8,10 @@ output:
     highlight: github
 ---
 
+```{r}
+library(tidyverse)
+library(WDI) # package to download World Development Indicators (WDI)
+```
 
 
 # COVID_WDI
@@ -17,10 +21,9 @@ R codes for combining COVI Ddata with World Development Indicators (WDI)
 Use the codes below in case you are interested in combining COVID data with WDI
 
 
+
 ## Covid data
 ```{r}
-
-library(tidyverse)
 
 ## download the death and number of confirmed cases data (COVID)
 death <-  read_csv("https://data.humdata.org/hxlproxy/data/download/time_series_covid19_deaths_global_iso3_regions.csv?dest=data_edit&filter01=merge&merge-url01=https%3A%2F%2Fdocs.google.com%2Fspreadsheets%2Fd%2Fe%2F2PACX-1vTglKQRXpkKSErDiWG6ycqEth32MY0reMuVGhaslImLjfuLU0EUgyyu2e-3vKDArjqGX7dXEBV8FJ4f%2Fpub%3Fgid%3D1326629740%26single%3Dtrue%26output%3Dcsv&merge-keys01=%23country%2Bname&merge-tags01=%23country%2Bcode%2C%23region%2Bmain%2Bcode%2C%23region%2Bmain%2Bname%2C%23region%2Bsub%2Bcode%2C%23region%2Bsub%2Bname%2C%23region%2Bintermediate%2Bcode%2C%23region%2Bintermediate%2Bname&filter02=merge&merge-url02=https%3A%2F%2Fdocs.google.com%2Fspreadsheets%2Fd%2Fe%2F2PACX-1vTglKQRXpkKSErDiWG6ycqEth32MY0reMuVGhaslImLjfuLU0EUgyyu2e-3vKDArjqGX7dXEBV8FJ4f%2Fpub%3Fgid%3D398158223%26single%3Dtrue%26output%3Dcsv&merge-keys02=%23adm1%2Bname&merge-tags02=%23country%2Bcode%2C%23region%2Bmain%2Bcode%2C%23region%2Bmain%2Bname%2C%23region%2Bsub%2Bcode%2C%23region%2Bsub%2Bname%2C%23region%2Bintermediate%2Bcode%2C%23region%2Bintermediate%2Bname&merge-replace02=on&merge-overwrite02=on&tagger-match-all=on&tagger-01-header=province%2Fstate&tagger-01-tag=%23adm1%2Bname&tagger-02-header=country%2Fregion&tagger-02-tag=%23country%2Bname&tagger-03-header=lat&tagger-03-tag=%23geo%2Blat&tagger-04-header=long&tagger-04-tag=%23geo%2Blon&header-row=1&url=https%3A%2F%2Fraw.githubusercontent.com%2FCSSEGISandData%2FCOVID-19%2Fmaster%2Fcsse_covid_19_data%2Fcsse_covid_19_time_series%2Ftime_series_covid19_deaths_global.csv")
@@ -43,7 +46,7 @@ death <- death %>%
 death <- death %>%
   pivot_longer(cols = ends_with("/20"),names_to = "date") 
 
-### clean the date variable into readable format
+### clean the date variable into a readable format
 death <- death %>%
   mutate(date = lubridate::mdy(date)) 
 
@@ -86,10 +89,27 @@ case <- case %>%
 all <- dplyr::left_join(death, case, by="id")
 
 final_covid <- all %>%
-  select(country = country.x,date = date.x,death,case)
-## Downlad WDI
+  select(country = country.x,date = date.x,death,case) %>%
+  mutate(id = paste(country,"-",date))
+
+library(tsibble)
+final_covid <- final_covid %>%
+  ungroup() %>%
+  as_tsibble(id,date) %>%
+  group_by(country) %>%
+  mutate(daily_death = death - lag(death), 
+          daily_case = case - lag(case))
+
+final_covid <- final_covid %>%
+  mutate(daily_death = ifelse(daily_death<0, NA_real_,daily_death),
+         daily_case = ifelse(daily_case<0, NA_real_,daily_case)
+         )
+
+write_csv(final_covid,"final_covid_Jan31.csv")
 
 ```
+
+
 
 
 ## WDI data
@@ -97,20 +117,21 @@ final_covid <- all %>%
 ```{r}
 
 
-
 library(downloader)
 
 ### WDI data location
 url <- "http://databank.worldbank.org/data/download/WDI_csv.zip"
 
+
 ### download WDI data
 download(url, dest="WDI_csv.zip", mode="wb") 
-
+unzip("WDI_csv.zip")
+temp
 ### unzip it in a path. My path is exdir = “/Users/shh/Downloads”, choose yours 
-unzip("WDI_csv.zip", exdir = "/Users/shh/Downloads")
+unzip(zipfile = "WDI_csv.zip")
 
 ### import WDI data
-wdi <- read_csv("/Users/shh/Downloads/WDIData.csv") # use your own path here 
+wdi <- read_csv("WDIData.csv") # use your own path here 
 
 ### clean WDI data. 
 wdi <- wdi %>% 
@@ -182,6 +203,17 @@ mean_var <- wdi_t %>%
 
 ## join to get the final dataset. 
 wdi_join2 <- left_join(wdi_join1,mean_var, by="country")
+```
+
+
+## A random number of countries
+```{r}
+
+country_sample <- c("austria" ,"Denmark", "Korea, South", "Estonia","Germany","Poland", "Bulgaria", "Estonia","Venezuela","El Salvador" ,"Cuba", "Slovenia" ,"Switzerland", "Uzbekistan",  "Iraq" ,"Ireland" , "Norway","Russia" ,"Ireland" ,"South Africa" ,"Canada" ,"Portugal" ,"Australia","Jordan","Saudi Arabia" ,"Japan","Armenia",   "Cyprus",  "Bolivia"   , "Kuwait", "Finland","Israel" ,"France","Lithuania","Iran", "Brazil" ,"Morocco" ,"Qatar","US","United Arab Emirates","New Zealand","Nigeria" , "Kenya","Italy" ,"India" ,"Sweden", "Georgia", "Spain" ,"Latvia","Belgium","Kuwait","Croatia" ,"Philippines","Luxembourg" ,"Kazakhstan")  
+length(country_sample)
+
+
+```
 ```
 
 
